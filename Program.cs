@@ -137,9 +137,10 @@ app.MapGet("/", () => Results.Content("""
                 <span class="status">● Çevrimiçi</span>
             </div>
         </div>
-        <div class="nav-menu">
+       <div class="nav-menu">
             <a class="nav-item active"><i class="fa-solid fa-users"></i> Gruplar & Mesajlar</a>
             <a class="nav-item" onclick="createGroupAPI()"><i class="fa-solid fa-plus"></i> Yeni Grup Oluştur</a>
+            <a class="nav-item" onclick="createPrivateChat()"><i class="fa-solid fa-user"></i> Kişiye Özel Mesaj</a>
         </div>
         <div class="logout-btn" onclick="logout()">
             <i class="fa-solid fa-arrow-right-from-bracket"></i> Çıkış Yap
@@ -185,14 +186,14 @@ app.MapGet("/", () => Results.Content("""
                 document.getElementById("loginOverlay").style.display = "none";
                 
                 await loadAllGroupsFromDB(); 
-                await conn.start().catch(err => console.log(err));
+                try {
+                    await conn.start();
+                } catch(err) { console.log("SignalR Başlatılamadı:", err); }
             }
         };
 
-        // YENİ: Sadece BİZE AİT grupları getiren istek
-        async function loadAllGroupsFromDB() {
+  async function loadAllGroupsFromDB() {
             try {
-                // currentUser bilgisini göndererek sadece yetkimiz olan grupları alıyoruz
                 const res = await fetch(`/api/Messages/MyGroups/${currentUser}`);
                 if (res.ok) {
                     const groups = await res.json();
@@ -206,16 +207,57 @@ app.MapGet("/", () => Results.Content("""
 
                     groups.forEach(g => {
                         if(g.id !== 1) {
+                            // YENİ: Eğer grup adı "Özel Sohbet:" ile başlıyorsa ikonunu tekil kişi yapıyoruz
+                            const isPrivate = g.name.startsWith("Özel Sohbet");
+                            const icon = isPrivate ? '<i class="fa-solid fa-user"></i>' : '<i class="fa-solid fa-users"></i>';
+                            const badgeTxt = isPrivate ? 'Birebir Mesaj' : 'Özel Grubunuz';
+
                             groupList.innerHTML += `
                                 <div class="group-item" onclick="switchGroup(${g.id}, '${g.name}', this)">
-                                    <div class="group-icon" style="background:#e0e7ff; color:#5c67f2;"><i class="fa-solid fa-users"></i></div>
-                                    <div><div style="font-weight: bold;">${g.name}</div><div style="font-size: 12px; color: #5c67f2;">Özel Grubunuz</div></div>
+                                    <div class="group-icon" style="background:#e0e7ff; color:#5c67f2;">${icon}</div>
+                                    <div><div style="font-weight: bold;">${g.name}</div><div style="font-size: 12px; color: #5c67f2;">${badgeTxt}</div></div>
                                 </div>
                             `;
                         }
                     });
                 }
             } catch(e) { console.log("Gruplar çekilemedi."); }
+        }
+
+        // YENİ: Birebir mesajlaşma için otomatik 2 kişilik gizli oda kuran fonksiyon
+        async function createPrivateChat() {
+            const targetUser = prompt("Özel mesaj atmak istediğiniz kişinin kullanıcı adını girin:");
+            if(!targetUser) return;
+            if(targetUser.toLowerCase() === currentUser.toLowerCase()) return alert("Kendinize mesaj atamazsınız!");
+
+            const dmName = `Özel Sohbet: ${targetUser}`;
+
+            try {
+                // 1. Adım: İki kişilik özel grubu kur
+                const res = await fetch('/api/Messages/CreateGroup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: dmName, adminId: currentUser })
+                });
+
+                if(res.ok) {
+                    const createdGroup = await res.json();
+                    
+                    // 2. Adım: Karşı tarafı otomatik olarak bu gruba (odaya) davet et
+                    await fetch('/api/Messages/AddMember', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ groupId: createdGroup.id, username: targetUser })
+                    });
+
+                    alert(`Harika! '${targetUser}' ile birebir özel mesajlaşma odanız oluşturuldu.`);
+                    loadAllGroupsFromDB(); // Listeyi yenile
+                } else {
+                    alert("Kullanıcı bulunamadı veya işlem başarısız: " + await res.text());
+                }
+            } catch(e) {
+                alert("Bağlantı hatası: " + e.message);
+            }
         }
 
         async function switchGroup(id, name, element) {
@@ -225,17 +267,35 @@ app.MapGet("/", () => Results.Content("""
             document.getElementById("currentRoomTitle").innerText = name;
             document.getElementById("chatMessages").innerHTML = '<div style="text-align:center; color:#9ca3af; font-size:12px; margin-top:10px;">Geçmiş Mesajlar Yükleniyor...</div>';
             
-            await conn.invoke("JoinGroup", currentGroupId).catch(e => console.log(e));
+            try {
+                if(conn.state !== "Connected") await conn.start();
+                await conn.invoke("JoinGroup", currentGroupId);
+            } catch(e) { console.log("Odaya girilemedi:", e); }
+            
             await loadMessageHistory();
         }
 
-        function addMemberUI() {
+        async function addMemberUI() {
             if(!currentGroupId) return alert("Önce sol taraftan bir grup seçmelisiniz!");
             if(currentGroupId === 1) return alert("Bu grup Sistem Odasıdır, herkes otomatik dahil olur. Manuel üye eklenemez.");
             
             const memberName = prompt("Bu gruba eklemek istediğiniz kişinin kullanıcı adını girin:");
-            if(memberName) {
-                alert(`Harika! '${memberName}' adlı kullanıcıya '${document.getElementById("currentRoomTitle").innerText}' grubu için yetki verildi.`);
+            if(!memberName) return;
+
+            try {
+                const res = await fetch('/api/Messages/AddMember', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ groupId: currentGroupId, username: memberName })
+                });
+
+                if(res.ok) {
+                    alert(`Harika! '${memberName}' adlı kullanıcı başarıyla '${document.getElementById("currentRoomTitle").innerText}' grubuna eklendi.`);
+                } else {
+                    alert("Üye eklenirken hata oldu: " + await res.text());
+                }
+            } catch(e) {
+                alert("Bağlantı hatası: " + e.message);
             }
         }
 
@@ -310,11 +370,13 @@ app.MapGet("/", () => Results.Content("""
             if(!currentGroupId) return alert("Lütfen silmek istediğiniz grubu seçin!");
             if(currentGroupId === 1) return alert("Sistem Odası silinemez!");
             
-            if(!confirm("Dikkat! Grup silindiğinde içindeki tüm mesajlar da silinir. Bu işlemi sadece Grup Admini yapabilir. Emin misiniz?")) return;
+            if(!confirm("Dikkat! Grup silindiğinde içindeki tüm mesajlar da silinir. Emin misiniz?")) return;
             const res = await fetch(`/api/Messages/DeleteGroup/${currentGroupId}`, { method: 'DELETE' });
             if(res.ok) {
                 alert("Grup ve içindeki mesajlar başarıyla silindi!");
                 location.reload(); 
+            } else if(res.status === 403) {
+                alert("Yetki Hatası: Sadece grubun kurucusu (Admin) silme işlemi yapabilir!");
             } else {
                 alert("Hata: " + await res.text());
             }
@@ -324,15 +386,10 @@ app.MapGet("/", () => Results.Content("""
             if(incomingGroupId === currentGroupId) renderMessage(sender, text);
         });
 
-        // YENİ: İsimleri ve gizli boşlukları kusursuz eşleştiren mesaj çizim fonksiyonu
         function renderMessage(sender, text) {
             const container = document.getElementById("chatMessages");
-            
-            // Gizli boşlukları sil ve harfleri güvenli bir şekilde eşleştir
             const safeSender = String(sender).trim();
             const safeUser = String(currentUser).trim();
-            
-            // JavaScript'in Türkçe karakter ve büyük/küçük harf sorununu çözen sihirli eşleştirme
             const isMe = safeSender.localeCompare(safeUser, undefined, { sensitivity: 'accent' }) === 0;
 
             const msgHtml = `
@@ -350,9 +407,21 @@ app.MapGet("/", () => Results.Content("""
             const input = document.getElementById("msgInput");
             const text = input.value.trim();
             if(!text) return;
-            await conn.invoke("SendGroupMessage", currentGroupId, currentUser, text);
-            input.value = "";
-            input.focus();
+            
+            try {
+                // MUHTEŞEM DETAY: Eğer sunucu kapanıp açıldığı için bağlantı koptuysa, kendi kendine tekrar bağlanır!
+                if(conn.state !== "Connected") {
+                    await conn.start();
+                    await conn.invoke("JoinGroup", currentGroupId);
+                }
+
+                await conn.invoke("SendGroupMessage", currentGroupId, currentUser, text);
+                input.value = "";
+                input.focus();
+            } catch(err) {
+                // Hata olduğunda sessizce durmak yerine ekrana ne olduğunu basar.
+                alert("Bağlantı hatası (Lütfen sayfayı yenileyin): " + err.message);
+            }
         }
 
         function handleEnter(e) { if(e.key === "Enter") sendMessage(); }

@@ -8,7 +8,32 @@ namespace MessagingAPI.Controllers
     [Route("api/[controller]")]
     [ApiController]
     public class MessagesController : ControllerBase
+    
     {
+
+        public class AddMemberDto
+{  
+    public int GroupId { get; set; }
+    public string Username { get; set; }
+}
+// Uygulama çalışırken üye kayıtlarını hafızada tutacak sihirli sözlük
+private static readonly Dictionary<int, List<string>> _groupMembers = new();
+
+[HttpPost("AddMember")]
+public IActionResult AddMember([FromBody] AddMemberDto request)
+{
+    if (!_groupMembers.ContainsKey(request.GroupId))
+    {
+        _groupMembers[request.GroupId] = new List<string>();
+    }
+    
+    if (!_groupMembers[request.GroupId].Contains(request.Username))
+    {
+        _groupMembers[request.GroupId].Add(request.Username);
+    }
+    
+    return Ok("Kullanıcı başarıyla gruba dahil edildi.");
+}
         private readonly AppDbContext _context;
 
         public MessagesController(AppDbContext context)
@@ -92,15 +117,23 @@ namespace MessagingAPI.Controllers
 
       
         [HttpDelete("DeleteGroup/{groupId}")]
-        public async Task<IActionResult> DeleteGroup(int groupId)
-        {
-            var group = await _context.MessageGroups.FindAsync(groupId);
-            if (group == null) return NotFound("Silinecek grup bulunamadı.");
+public async Task<IActionResult> DeleteGroup(int groupId)
+{
+    var username = User.Identity?.Name;
+    if (string.IsNullOrEmpty(username)) return Unauthorized("Giriş yapmalısınız!");
 
-            _context.MessageGroups.Remove(group);
-            await _context.SaveChangesAsync();
-            return Ok("Grup başarıyla silindi.");
-        }
+    var user = await _context.Users.FirstOrDefaultAsync(u => u.UserName == username);
+    var group = await _context.MessageGroups.FindAsync(groupId);
+
+    if (group == null) return NotFound("Grup bulunamadı.");
+
+    if (groupId == 1) return BadRequest("Sistem odası silinemez!");
+    if (group.AdminId != user.Id) return Forbid("Sadece kendi oluşturduğunuz grubu silebilirsiniz!");
+
+    _context.MessageGroups.Remove(group);
+    await _context.SaveChangesAsync();
+    return Ok("Grup başarıyla silindi.");
+}
 
         [HttpDelete("DeleteMessage/{id}")]
         public async Task<IActionResult> DeleteMessage(int id)
@@ -114,17 +147,22 @@ namespace MessagingAPI.Controllers
         }
 
         [HttpGet("MyGroups/{username}")]
-        public async Task<IActionResult> GetMyGroups(string username)
-        {
-            // İsimden kullanıcının gerçek kimliğini bul
-            var user = await _context.Users.FirstOrDefaultAsync(u => u.UserName == username);
-            if (user == null) return BadRequest("Kullanıcı bulunamadı");
+public async Task<IActionResult> GetMyGroups(string username)
+{
+    var user = await _context.Users.FirstOrDefaultAsync(u => u.UserName == username);
+    if (user == null) return BadRequest("Kullanıcı bulunamadı");
 
-            var groups = await _context.MessageGroups
-                .Where(g => g.Id == 1 || g.AdminId == user.Id)
-                .ToListAsync();
+    // Veritabanındaki tüm grupları çekiyoruz
+    var allGroups = await _context.MessageGroups.ToListAsync();
 
-            return Ok(groups);
-        }
+    // Filtreleme: Ortak Oda (Id=1) VEYA Kurucusu olduğumuz oda VEYA hafızada üyesi olduğumuz oda!
+    var filteredGroups = allGroups.Where(g => 
+        g.Id == 1 || 
+        g.AdminId == user.Id || 
+        (_groupMembers.ContainsKey(g.Id) && _groupMembers[g.Id].Contains(username))
+    ).ToList();
+
+    return Ok(filteredGroups);
+}
     }
 }

@@ -82,3 +82,4 @@
 /Users/sudeozcelik/MessagingAPI/obj/Debug/net7.0/MessagingAPI.pdb
 /Users/sudeozcelik/MessagingAPI/obj/Debug/net7.0/MessagingAPI.genruntimeconfig.cache
 /Users/sudeozcelik/MessagingAPI/obj/Debug/net7.0/ref/MessagingAPI.dll
+/Users/sudeozcelik/MessagingAPI/obj/Debug/net7.0/MessagingAPI.sourcelink.json
